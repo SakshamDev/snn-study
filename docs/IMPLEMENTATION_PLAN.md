@@ -1,121 +1,97 @@
-# Implementation and execution plan
+# Research Implementation & Execution Plan
 
-Created October 9, 2026. This document translates the saved research response into the implemented workflow. It does not report the main experiment's outcomes.
+This document outlines the software architecture, execution milestones, verification checkpoints, and analysis pipeline for the Spiking Neural Network accuracy–activity trade-off study.
 
-## 1. Read the implementation before expanding it
+---
 
-| File | Responsibility | What to understand |
+## 1. System Architecture and Module Responsibilities
+
+The codebase is structured into modular components with strict separation between modeling, data handling, experiment tracking, and statistical analysis:
+
+| Component | Path | Responsibility |
 |---|---|---|
-| `src/surj_snn/config.py` | Validated configuration and grid | All scientific choices come from one resolved config. |
-| `data.py` | Images, saved splits, encoding | Train/validation disjointness and shared evaluation randomness. |
-| `models.py` | LIF dynamics, SNN, ANN | Explicit state, strict threshold, detached reset gradient. |
-| `metrics.py` | Classification, SynOps/MACs, footprint | Counts are hardware-independent proxies. |
-| `experiment.py` | Training, checkpointing, evaluation, protocol checks | Validation is used for selection; test evaluation requires locked choices. |
-| `analysis.py` | Seed aggregation, comparisons, selection, plots | Encoding repeats are nested within training seeds. |
-| `scripts/` | Command-line entry points | Small scripts use the common implementation. |
-| `tests/` | Hand-checkable scientific invariants | Validate the equations and counting conventions. |
+| **Configuration** | `src/surj_snn/config.py` | Validated experiment schemas, parameter grids, cryptographic digest computation. |
+| **Data Engine** | `src/surj_snn/data.py` | Stratified dataset partitioning, fast index batching, exact Bernoulli Poisson encoding, threaded prefetching. |
+| **Models** | `src/surj_snn/models.py` | Custom LIF cell with subtractive reset, layer-major feed-forward SNN, ReLU reference ANN. |
+| **Metrics** | `src/surj_snn/metrics.py` | Effective SynOps calculation, ANN MAC accounting, classification metrics (accuracy, macro-F1), memory footprint. |
+| **Experiment Runner** | `src/surj_snn/experiment.py` | Training loops, checkpointing, validation-gated testing, protocol freezing, grid sharding. |
+| **Statistical Analysis** | `src/surj_snn/analysis.py` | Nested seed aggregation, paired effect estimation, 95% confidence intervals, automated publication figures. |
+| **CLI Dispatcher** | `src/surj_snn/cli.py` | Unified command-line interface for individual scripts. |
 
-## 2. Setup and software verification
+---
 
-1. Run `./run.ps1 -Action check` in PowerShell, or `python -m pytest -q` in the configured environment.
-2. Run `./run.ps1 -Action smoke` to exercise training, validation selection, checkpoint loading, test gating, analysis, and figure creation on generated data.
-3. Confirm there are three completed smoke training runs and five evaluated conditions per split: two trained SNNs, two additional raised-threshold conditions, and one ANN.
-4. Inspect the smoke analysis metadata. It must state that data are synthetic and provide no training-seed confidence interval for the one-seed configuration.
+## 2. Research Workflow Milestones
 
-Acceptance checks: no persistent membrane state between examples; nonzero regularizer gradient; correct fanout counting; matched evaluation input spikes; clear missing-run failures; no test selection from test metrics.
+```mermaid
+graph TD
+    A["1. Data Preparation & Stratification"] --> B["2. Protocol Freezing (protocol.json)"]
+    B --> C["3. Grid Training (45 SNN + 5 ANN runs)"]
+    C --> D["4. Validation Evaluation & Gated Selection"]
+    D --> E["5. Final Held-Out Test Evaluation"]
+    E --> F["6. Statistical Analysis & Figure Generation"]
+```
 
-The delivered source supports normal virtual environments. On this Codex Windows host, Python's temporary-directory permissions interrupted standard `ensurepip`; creation-time verification used an isolated environment under `work/` with inherited permissions for temporary installation folders. This workaround is external to the research implementation. If recreating the environment inside a similarly restricted host fails, use a normal user PowerShell session or ask for environment-specific troubleshooting. Do not disable package hash verification.
+### Milestone 1: Environment Setup & Automated Verification
+- Verify the test suite (28 tests covering LIF dynamics, exact reset gradients, surrogate slope, SynOps accounting, and deterministic sharding).
+- Run the synthetic smoke workflow (`smoke.json` / `smoke_cuda.json`) to confirm end-to-end file generation, protocol locking, and figure generation.
 
-## 3. Run the minimum real-data pilot
+### Milestone 2: Dataset Preparation & Protocol Freezing
+- Download Fashion-MNIST (or MNIST) and construct deterministic stratified splits (54k train, 6k validation, 10k test).
+- Compute cryptographic digests (`manifest.json` and `study.json`).
+- Freeze the experimental protocol (`protocol.json`). Once frozen, any alteration to config or code prevents test-set evaluation without starting a new study.
 
+### Milestone 3: Grid Execution
+- Train the full factorial design: $T \in \{8, 16, 32\}$, $\lambda \in \{0.0, 0.1, 1.0\}$, across 5 random seeds ($N=50$ total training runs).
+- For local multi-core CPUs or cloud GPUs (e.g. Kaggle T4), execute runs sequentially or in parallel using `scripts/run_parallel.py`.
+
+### Milestone 4: Validation Evaluation & Strategy Selection
+- Evaluate all trained models on the validation partition across 3 independent input encoding seeds.
+- Compute validation-based optimal interventions:
+  - Best regularized model ($\lambda^*$) within $\le 1.0\text{ pp}$ accuracy drop.
+  - Best threshold multiplier ($\alpha^*$) within $\le 1.0\text{ pp}$ accuracy drop.
+- Lock candidate decisions in `selection.json`.
+
+### Milestone 5: Held-Out Test Evaluation & Statistical Synthesis
+- Evaluate all conditions on the 10,000-sample test set across 3 novel test encoding seeds.
+- Compute seed-level paired difference metrics ($\Delta \text{Acc}$, $\% \Delta \text{SynOps}$) with 95% Student's $t$ confidence intervals.
+- Generate final analysis tables (`summary.csv`, `primary_paired_effects.csv`) and publication figures (PDF and PNG).
+
+---
+
+## 3. Command Reference
+
+### Local CPU Execution (Windows / PowerShell)
 ```powershell
+# 1. Run automated unit and science test suite
+.\run.ps1 -Action check
+
+# 2. Run synthetic smoke test
+.\run.ps1 -Action smoke
+
+# 3. Run small MNIST pilot (3 epochs)
 .\run.ps1 -Action pilot
-```
 
-Configuration: MNIST, 5,000 train / 1,000 validation, seed 0, T=16, penalties 0 and 1, three epochs; thresholds 1, 1.25, 1.5 on baseline hidden layers; three validation encoding realizations; ANN reference.
-
-Read `runs/pilot/analysis/validation/seed_metrics.csv`, `primary_paired_effects.csv`, and all four figures. Compare baseline and regularized input counts: they should match exactly for each encoding realization. Examine hidden activity and whole-network cost separately.
-
-The pilot checks that the pipeline functions. Three epochs on a subset are insufficient to establish convergence or choose a final research conclusion. Do not describe an absent effect here as a general failure of regularization.
-
-## 4. Finalize the scientific decisions using training/validation data
-
-Before the main study, complete these decisions in a research log:
-
-- Is 15 epochs sufficient for reasonable baseline convergence? Examine validation curves using a development run with a distinct results directory.
-- Are 0.1 and 1.0 useful penalty magnitudes? A revised grid must retain zero and name a nonzero primary penalty.
-- Is the ANN baseline reasonably tuned? The provided ANN shares the starting learning rate and budget; there is no automatic ANN hyperparameter search. If needed, compare a small declared learning-rate/epoch grid on development validation data and finalize the baseline before testing. To implement different final ANN hyperparameters, record them explicitly in a new config/schema and rerun correctness checks.
-- Can the laptop afford all three windows? If not, remove one window before freezing, preserve five seeds, and keep the primary T=16 comparison.
-- Keep the one-percentage-point accuracy tolerance unless a different practical criterion is justified before the main study.
-- Confirm that the test plan, primary contrast, candidate grids, and interval interpretation in `EXPERIMENT_PROTOCOL.md` match your final choices.
-
-Use a new `results_dir` for every changed config or implementation. The code rejects mixed studies. Source hashes cover Python implementation/scripts and `pyproject.toml`; documentation changes alone do not invalidate runs.
-
-## 5. Freeze and train
-
-```powershell
+# 4. Run main Fashion-MNIST study
 .\run.ps1 -Action main-train
-```
-
-This downloads official Fashion-MNIST if needed, saves the deterministic 54,000/6,000 split, records the full dataset and split hashes, freezes the protocol, and trains 45 SNN conditions plus five ANN seeds sequentially.
-
-At every epoch, validation accuracy is averaged over the three fixed validation encoding seeds. The highest value selects the checkpoint; strict improvement preserves the earliest epoch on ties. The same rule applies to the ANN, evaluated once because it has no stochastic encoder.
-
-Each run records package versions, OS/Python, code hash, Git commit if available, actual device, time, full history, and checkpoint hash. Incomplete runs remain marked as failed or running. Preserve them, identify the cause, and move the individual directory aside before retrying. Do not silently discard a difficult seed.
-
-Measure one full representative run, including its validation passes, to budget the grid. The rough `52.5 * R16` estimate in the original response is a planning model; use observed runtime and remember that encoding, validation, and data overhead do not scale perfectly with T.
-
-## 6. Validate and lock model selection
-
-```powershell
 .\run.ps1 -Action main-validate
-```
-
-Verify that all conditions are present, then inspect activity, accuracy, ties, inactive-neuron fractions, and training curves. Selection uses one common configuration across training seeds at each T, not one independently optimized setting per seed.
-
-The next stage locks two strategies per T:
-
-1. Regularization: choose among all declared penalties at threshold multiplier 1.
-2. Threshold adjustment: choose among all declared multipliers on the lambda=0 checkpoint.
-
-Each strategy minimizes mean total SynOps subject to mean validation accuracy at least baseline accuracy minus the tolerance. Ties favor higher accuracy, then smaller penalty/multiplier. The unmodified baseline belongs to both candidate sets. Consequently, a strategy can correctly choose "no intervention."
-
-Candidate-set sizes are three each in the main grid. These are equal candidate counts, not equal training compute: regularization requires retraining and threshold adjustment does not.
-
-## 7. Evaluate the held-out test set once choices are fixed
-
-```powershell
 .\run.ps1 -Action main-test
 ```
 
-This locks selection, evaluates the entire predeclared test grid, and writes final tables and plots. Testing all conditions supports transparent sensitivity reporting. The primary comparison stays T=16, lambda=0.1 versus lambda=0 unless deliberately amended before freezing.
+### Direct Python / Linux / GPU Execution
+```bash
+# Data preparation & protocol lock
+python scripts/prepare_data.py --config configs/main_cuda.json --download
+python scripts/freeze_protocol.py --config configs/main_cuda.json
 
-Repeated invocation reuses existing evaluations. The code checks config, source, checkpoint, and selection provenance. It cannot prevent someone from manually opening the dataset or writing a separate test-driven tuning script; experimental discipline is still required.
+# Parallel grid execution (3 workers on GPU)
+python scripts/run_parallel.py --config configs/main_cuda.json --stage train --workers 3
+python scripts/run_parallel.py --config configs/main_cuda.json --stage validate --workers 3
 
-## 8. Interpret and write
+# Validation analysis & strategy locking
+python scripts/analyze.py --config configs/main_cuda.json --split validation
+python scripts/select.py --config configs/main_cuda.json
 
-Required outputs:
-
-- Main accuracy/activity trade-offs with all five training seeds.
-- Primary paired accuracy difference and operation reduction, including uncertainty.
-- Separate hidden-output and whole-network operation reductions.
-- Selected regularization versus selected threshold comparison, labeled secondary.
-- Training/failure diagnostics and exact model/data assumptions.
-
-Student t intervals assume approximately normal independent seed-level effects. With five seeds, the interval is imprecise and conditional on the fixed split and encoding banks. It does not estimate all forms of population uncertainty. No confidence interval is fabricated for the one-seed pilot.
-
-If the primary accuracy interval crosses the negative tolerance, report that the tolerance is not established. If hidden activity decreases while total cost barely changes, explain input-layer dominance. If threshold adjustment performs similarly, discuss the extra training cost of regularization. Report negative or inconclusive findings without changing the primary question after seeing test results.
-
-## Six-week milestones
-
-| Week | Deliverable |
-|---|---|
-| 1 | Explain LIF/encoding/surrogate gradients; read core papers; understand and run the tests. |
-| 2 | Complete the pilot; audit metrics; choose development settings and freeze the main protocol. |
-| 3 | Complete the main training grid with logs/checkpoints. |
-| 4 | Finish validation, locked test evaluation, seed-level analysis, and optionally one extension. |
-| 5 | Draft methods/results/discussion; produce final figures and verify claims against raw data. |
-| 6 | Rerun a principal comparison in a clean environment; finish writing, references, and SURJ formatting. |
-
-Optional extensions are deliberately not part of the baseline implementation: MNIST transfer, input-corruption evaluation, or leak sensitivity. Choose at most one after the core study is complete. A diagram and final manuscript layout also remain authoring tasks; automatic plots are research analysis drafts.
-
+# Final test evaluation & synthesis
+python scripts/run_parallel.py --config configs/main_cuda.json --stage test --workers 3
+python scripts/analyze.py --config configs/main_cuda.json --split test
+```

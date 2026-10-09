@@ -1,136 +1,221 @@
-# Accuracy–Activity Trade-offs in Small Spiking Neural Networks
+# Accuracy–Activity Trade-offs in Spiking Neural Networks: Regularization vs. Threshold Adaptation
 
-A beginner-friendly, software-only research repository for a possible SURJ paper. It compares a hidden-spike training penalty with post-training threshold adjustment, with an ANN reference and explicit activity accounting.
+[![Tests](https://github.com/soulsaku19/neuromorphic-snn-tradeoffs/actions/workflows/ci.yml/badge.svg)](https://github.com/soulsaku19/neuromorphic-snn-tradeoffs/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Start with the MNIST pilot. The main Fashion-MNIST experiment contains 45 SNN training runs plus five ANN runs.** Training the main grid is an intentional, separate action.
+A reproducible research codebase investigating the trade-offs between classification accuracy and internal spiking activity in Spiking Neural Networks (SNNs).
 
-## Reading map
+This project compares **training-time spike regularization** against **post-training threshold scaling** across varying temporal horizons ($T \in \{8, 16, 32\}$), benchmarked against an equivalent Artificial Neural Network (ANN) reference baseline with explicit synaptic operation (SynOps) accounting.
 
-- [Saved research response](docs/research_response.md): the complete prior research-planning answer, preserved from the chat.
-- [Implementation plan](docs/IMPLEMENTATION_PLAN.md): milestones, commands, acceptance checks, and remaining research decisions.
-- [Experimental protocol](docs/EXPERIMENT_PROTOCOL.md): exact implemented equations, controls, analysis, and limitations.
-- [Original research prompt](docs/original_research_prompt.md): your initial objectives.
-- [Validation record](docs/VALIDATION.md): checks actually performed during repository creation.
-- [Project handoff](docs/HANDOFF.md): status summary at delivery time.
-- [Kaggle GPU guide](docs/KAGGLE.md): running the main study on a T4 with the CUDA configs and parallel workers.
+---
 
-No research outcomes or publication claims are made. This is a work-in-progress research codebase; the full Fashion-MNIST experiment has not been run yet.
+## 🔬 Research Overview
 
-## Quick start on this Windows workspace
+### Key Questions
+1. **Regularization vs. Threshold Scaling:** How effectively does an internal hidden-spike occupancy penalty ($\mathcal{L}_{\text{occupancy}}$) during surrogate-gradient backpropagation reduce spiking activity compared to post-training threshold scaling ($\theta \leftarrow \theta \cdot \alpha$)?
+2. **Constrained Efficiency:** Can either strategy achieve meaningful reductions in total Synaptic Operations ($\text{SynOps}$) while respecting a pre-declared accuracy budget ($\le 1.0\text{ pp}$ drop relative to the unconstrained baseline)?
+3. **Temporal Dynamics:** How do simulation temporal horizons ($T=8, 16, 32$ timesteps) and layer-wise fanouts govern the efficiency Pareto frontier relative to standard ReLU ANNs?
 
-Open PowerShell in this directory:
+```
+                       [ Input: 784 (Bernoulli Rate Encoding) ]
+                                      │
+                                      ▼
+             ┌──────────────────────────────────────────────────┐
+             │       LIF Hidden Layer 1 (128 Neurons)           │
+             │   v[t] = β·u[t-1] + W₁s₀[t] + b₁; s₁[t] = v > θ  │
+             └──────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+             ┌──────────────────────────────────────────────────┐
+             │       LIF Hidden Layer 2 (64 Neurons)            │
+             │   v[t] = β·u[t-1] + W₂s₁[t] + b₂; s₂[t] = v > θ  │
+             └──────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+             ┌──────────────────────────────────────────────────┐
+             │       LIF Output Layer (10 Class Neurons)        │
+             │         z = γ · (1/T) ∑ s_out[t],  γ = 10.0      │
+             └──────────────────────────────────────────────────┘
+                                      │
+                        Loss = CrossEntropy(z, y)
+                     + λ · 0.5 · (Occupancy₁ + Occupancy₂)
+```
 
+---
+
+## 📐 Experimental Methodology & Architecture
+
+- **SNN Dynamics:** 784–128–64–10 Leaky Integrate-and-Fire (LIF) network ($\beta = 0.9, \theta = 1.0$) with immediate subtractive reset ($\mathbf{u}[t] = \mathbf{v}[t] - \theta \cdot \mathbf{s}[t]$), detached reset gradient, and arctangent surrogate gradient ($\alpha = 2.0$).
+- **ANN Reference:** Identical 784–128–64–10 topology and parameter count (109,386 parameters) with standard ReLU activations.
+- **Activity Accounting:**
+  - **SynOps (SNN):** Event-driven accumulation count ($\text{SynOps} = \sum_{l} \sum_{i \in \text{active}_{l-1}} \|\mathbf{w}_{l, :, i}\|_0$).
+  - **Effective MACs (ANN):** Non-zero activation multiply-accumulate operations.
+  - **Occupancy & Inactive Neurons:** Layer-wise spike rates and silent neuron proportions.
+- **Randomness Controls:**
+  - Shared Bernoulli rate-encoding streams across temporal windows ($T_{\text{max}} = 32$) to ensure prefix invariance.
+  - 5 independent training seeds ($S \in \{11, 22, 33, 44, 55\}$).
+  - Disjoint validation ($N=3$) and test ($N=3$) encoding realizations.
+- **Selection & Statistical Rigor:**
+  - Optimal intervention selected strictly on the validation partition within the tolerance budget ($\delta = 1.0\text{ pp}$).
+  - Seed-level paired difference estimation ($\Delta \text{Acc}$, $\% \Delta \text{SynOps}$) with two-sided 95% Student's $t$ confidence intervals across independent seeds.
+
+---
+
+## 📁 Repository Structure
+
+```
+├── configs/
+│   ├── main.json             # 50-run main study configuration (Fashion-MNIST, CPU)
+│   ├── main_cuda.json        # Main study configuration optimized for CUDA / Kaggle T4
+│   ├── pilot.json            # 3-epoch MNIST feasibility pilot
+│   ├── smoke.json            # Fast synthetic workflow check (CPU)
+│   └── smoke_cuda.json       # Fast synthetic workflow check (CUDA preflight)
+├── docs/
+│   ├── EXPERIMENT_PROTOCOL.md # Mathematical formulas, network dynamics & statistical protocol
+│   ├── IMPLEMENTATION_PLAN.md # Execution milestones, pipeline design & command reference
+│   ├── KAGGLE.md             # Guide for running the main study on Kaggle T4 GPUs
+│   └── VALIDATION.md         # Unit test & benchmark verification record (28 tests)
+├── scripts/
+│   ├── prepare_data.py       # Deterministic dataset downloading & stratification
+│   ├── freeze_protocol.py    # Protocol hashing & integrity locking
+│   ├── train.py              # Single-condition model training
+│   ├── evaluate.py           # Condition evaluation on validation/test splits
+│   ├── run_grid.py           # Batch grid execution with sharding support
+│   ├── run_parallel.py       # Multi-process parallel worker dispatcher
+│   ├── select.py             # Validation-gated strategy selection
+│   ├── analyze.py            # Statistical synthesis & publication figure generation
+│   └── smoke_test.py         # End-to-end synthetic verification suite
+├── src/
+│   └── surj_snn/             # Core Python package (models, data, metrics, experiment, analysis)
+├── tests/
+│   ├── test_science.py       # 19 tests: LIF dynamics, surrogate gradients, metrics, protocol
+│   └── test_fast_path.py     # 9 tests: batching, exact shuffle replication, sharding
+├── pyproject.toml            # Project packaging & dependencies
+└── run.ps1                   # Windows PowerShell task runner
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Installation
+
+**Requirements:** Python 3.11 or 3.12.
+
+```bash
+# Clone the repository
+git clone https://github.com/soulsaku19/neuromorphic-snn-tradeoffs.git
+cd neuromorphic-snn-tradeoffs
+
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\Activate.ps1
+
+# Install CPU PyTorch and dependencies
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[dev]"
+```
+
+### 2. Verify the Installation (28 Tests)
+
+```bash
+# Run automated tests
+pytest -q
+
+# Run synthetic end-to-end pipeline check
+python scripts/smoke_test.py --config configs/smoke.json
+```
+
+On Windows with PowerShell:
 ```powershell
 .\run.ps1 -Action check
 .\run.ps1 -Action smoke
-.\run.ps1 -Action pilot
 ```
 
-The launcher uses a local `.venv`. (It may also fall back to a author-local validation environment, which does not exist on a fresh clone.)
+---
 
-With the workspace fallback, `check` uses the external temporary-folder compatibility runner when available. On a normal local environment, it runs pytest directly. The launcher keeps Matplotlib's cache under `runs/` unless you set `MPLCONFIGDIR` yourself.
+## 🔬 Running the Research Study
 
-The smoke check uses generated patterns solely to verify the complete workflow. The pilot downloads MNIST if necessary, trains two SNN conditions and one ANN for three epochs, evaluates validation data, and creates figures. The pilot launcher never evaluates MNIST's official test partition.
+### Option A: Cloud GPU (Kaggle T4 / CUDA) — Recommended
 
-Completed runs and evaluations are skipped on rerun. Interrupted runs are preserved and clearly reported; this version resumes at completed-condition boundaries, not within a partially completed training run. Move an interrupted condition directory aside before retrying the identical protocol.
+Running the full 50-condition grid across 5 seeds is fast on a GPU using parallel workers (~1–2 hours total). See [docs/KAGGLE.md](docs/KAGGLE.md) for full details.
 
-## Install on another machine
+```python
+# In a Kaggle Notebook (GPU T4, Internet: On):
+CFG = "configs/main_cuda.json"
 
-Python 3.11–3.13 is supported by the project metadata. The delivered lock was tested on Windows with Python 3.12 and CPU PyTorch.
+!python scripts/prepare_data.py --config {CFG} --download
+!python scripts/freeze_protocol.py --config {CFG}
 
-```powershell
-.\scripts\setup.ps1
+# Train 50 conditions with 3 parallel worker processes
+!python scripts/run_parallel.py --config {CFG} --stage train --workers 3
+
+# Evaluate validation partition & lock candidate selection
+!python scripts/run_parallel.py --config {CFG} --stage validate --workers 3
+!python scripts/analyze.py --config {CFG} --split validation
+!python scripts/select.py --config {CFG}
+
+# Evaluate final held-out test set & generate publication figures
+!python scripts/run_parallel.py --config {CFG} --stage test --workers 3
+!python scripts/analyze.py --config {CFG} --split test
 ```
 
-Alternatively, use the standard commands:
+### Option B: Local Multi-Core CPU
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-lock-windows-cpu.txt
-.\.venv\Scripts\python.exe -m pip install --no-build-isolation --no-deps -e .
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-On Linux/macOS, create a virtual environment, install a compatible PyTorch/torchvision pair using [PyTorch's installation instructions](https://pytorch.org/get-started/locally/), then run `python -m pip install -e ".[dev]"`. Capture a new environment lock before research runs. The Windows CPU lock is not a CUDA or universal-platform lock.
-
-All Python scripts also work without an editable install because their bootstrap locates the repository's `src/` directory.
-
-## Main study workflow
-
-Read the implementation plan, inspect the pilot, and finalize `configs/main.json` before starting. A frozen protocol records the resolved configuration, dataset/split hashes, source hash, primary contrast, and accuracy tolerance.
-
-```powershell
-# Downloads Fashion-MNIST, freezes the plan, and starts the 50-run grid.
+# 1. Download Fashion-MNIST and train the 50-condition grid
 .\run.ps1 -Action main-train
 
-# Evaluates all predeclared validation conditions and produces analysis.
+# 2. Evaluate validation split and produce interim analysis
 .\run.ps1 -Action main-validate
 
-# Locks validation-only choices, evaluates the test grid, and analyzes it.
+# 3. Lock validation choices, evaluate test split, and generate final figures
 .\run.ps1 -Action main-test
 ```
 
-To run one condition with an activated environment:
+---
 
-```powershell
-python scripts/prepare_data.py --config configs/main.json --download
-python scripts/freeze_protocol.py --config configs/main.json
-python scripts/train.py --config configs/main.json --model snn --steps 16 --penalty 0.1 --seed 11
-python scripts/evaluate.py --config configs/main.json --model snn --steps 16 --penalty 0.1 --seed 11 --split validation
-```
+## 📊 Outputs & Artifacts
 
-`scripts/run_grid.py --config ... --stage train|validate|test` provides the batch workflow. `scripts/select.py` locks validation choices; `scripts/analyze.py --split validation|test` generates tables and plots from the complete grid. Every script provides `--help`.
-
-## What is implemented
-
-- A 784–128–64–10 LIF network, using PyTorch with snnTorch's arctangent surrogate derivative.
-- An identically sized ReLU ANN reference.
-- Explicit immediate subtractive reset, with reset gradients detached and state local to each forward call.
-- Bernoulli rate input encoding with shared evaluation realizations and common prefixes across simulation windows.
-- Cross-entropy on scaled output rates plus an equally weighted hidden-layer occupancy penalty.
-- Independent initialization, data-order, training-encoding, and evaluation randomness.
-- Stratified, saved splits and separate official test data.
-- Validation checkpoint selection; earliest epoch wins exact ties.
-- Post-training hidden-threshold adjustment with fixed weights and output threshold.
-- Layer spikes, occupancy, inactive neurons, output ties, effective synaptic accumulations, ANN MACs, footprint, and instrumented software timing.
-- Seed-level aggregation, paired effects, and 95% t intervals when at least two independent training seeds exist.
-- Validation-only constrained selection and explicit checks before test evaluation.
-- PNG/PDF figures and CSV/JSON/NPZ raw outputs.
-
-## Outputs
-
-Generated files are placed in `runs/<study>/` and excluded from Git by default:
+All experiment runs and analysis tables are written to `runs/<study_name>/`:
 
 ```text
 runs/main/
-  study.json                  resolved configuration and data provenance
-  protocol.json               frozen research protocol
-  selection.json              validation-only choices and evidence hash
-  snn_T16_L0p1_seed11/
-    run.json                  environment, status, footprint, checkpoint hash
-    history.json              epoch-level training and validation records
-    best.pt                   best validation checkpoint
-    evaluations/
-      validation_a1/
-        metrics.json
-        predictions_encoding101.npz
-  analysis/test/
-    encoding_metrics.csv      repeat-level measurements
-    seed_metrics.csv          one row per independently trained model/condition
-    summary.csv               means, SDs, and confidence intervals
-    primary_paired_effects.csv
-    selected_strategy_effects.csv
-    analysis_metadata.json
-    figures/                  four figures, each PNG and PDF
+├── study.json                   # Resolved configuration & data provenance
+├── protocol.json                # Cryptographically frozen protocol metadata
+├── selection.json               # Validation-locked strategy decisions
+├── snn_T16_L0p1_seed11/
+│   ├── run.json                 # Execution environment, timestamp & checkpoint SHA256
+│   ├── history.json             # Epoch-by-epoch loss, occupancy, accuracy & wall time
+│   ├── best.pt                  # Checkpoint with highest validation accuracy
+│   └── evaluations/
+│       ├── validation_a1/       # Validation metrics (3 encoding realizations)
+│       └── test_a1/             # Test metrics & raw predictions
+└── analysis/test/
+    ├── encoding_metrics.csv     # Raw repeat-level metrics
+    ├── seed_metrics.csv         # Aggregated seed-level metrics
+    ├── summary.csv              # Means, SDs, and 95% confidence intervals
+    ├── primary_paired_effects.csv # Primary hypothesis paired differences
+    ├── selected_strategy_effects.csv # Validation-selected strategy comparisons
+    └── figures/                 # Publication-ready figures (PNG & PDF):
+        ├── fig1_accuracy_activity_tradeoff.pdf
+        ├── fig2_penalty_timestep_heatmap.pdf
+        ├── fig3_layer_operation_breakdown.pdf
+        └── fig4_training_convergence_curves.pdf
 ```
 
-Back up `runs/` and `data/splits/` before cleaning anything. They are required research records even though they are not source-controlled. Publishing or uploading data/checkpoints is a separate choice.
+---
 
-## Interpretation
+## 📖 Detailed Documentation
 
-Effective synaptic accumulations assume events can skip inactive connections. Standard dense PyTorch execution does not automatically realize that saving. ANN MACs and SNN accumulations are different operation types. Neither counts nor software execution time establishes neuromorphic energy or latency.
+- **[Experimental Protocol](docs/EXPERIMENT_PROTOCOL.md):** Formal definitions of SNN/ANN dynamics, SynOps calculations, loss functions, and statistical pairing.
+- **[Implementation Plan & Architecture](docs/IMPLEMENTATION_PLAN.md):** Module breakdown, execution milestones, acceptance criteria, and command reference.
+- **[Kaggle GPU Execution Guide](docs/KAGGLE.md):** Step-by-step notebook instructions, performance optimizations, and sharding details.
+- **[Validation & Verification Record](docs/VALIDATION.md):** Summary of 28 passing unit/science tests and MNIST pilot results.
 
-The included one-seed pilot and synthetic check cannot establish a research hypothesis. Five main-study seeds are a starting point, and uncertainty may still be wide. Existing literature already studies sparsity penalties, threshold effects, and accuracy–activity trade-offs; the planned contribution is the controlled comparison and its explanation.
+---
 
-The code intentionally leaves optional noise studies, extra neuron models, conversion, and publication drafting to later milestones. The complete original planning response remains in `docs/research_response.md`.
+## 📄 License & Attribution
 
+This project is licensed under the [MIT License](LICENSE).

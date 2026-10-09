@@ -1,96 +1,129 @@
-# Implemented experimental protocol
+# Experimental Protocol: Accuracy–Activity Trade-offs in Spiking Neural Networks
 
-Status: a proposed undergraduate comparative study. The main experiment has not been run during repository creation. Read `VALIDATION.md` for the actual software verification scope.
+This document formally specifies the experimental protocol, mathematical formulations, network dynamics, control baselines, and statistical analysis procedures for investigating accuracy–activity trade-offs in small Spiking Neural Networks (SNNs).
 
-## Question and scope
+---
 
-At short simulation windows, how does a simple hidden-spike penalty compare with raising hidden firing thresholds after training, under a one-percentage-point accuracy budget? The experiment measures algorithmic activity in simulated SNNs. It does not measure chip energy, event-camera performance, or biological learning.
+## 1. Research Objectives and Scope
 
-## Exact model
+Spiking Neural Networks offer event-driven, energy-efficient computation on neuromorphic hardware when internal spike rates are sparse. However, reducing spike rates often incurs an accuracy penalty. This project systematically investigates:
 
-The default network is 784–128–64–10 with fully connected biased layers. An ANN uses ReLU in the two hidden layers. An SNN uses LIF units in all three layers, with independently reset state for each image.
+1. **Regularization vs. Threshold Adaptation:** How does a hidden-spike occupancy penalty ($\mathcal{L}_{\text{occupancy}}$) incorporated during surrogate-gradient backpropagation compare to post-training hidden-neuron threshold scaling ($\theta \leftarrow \theta \cdot \alpha$) in reducing total synaptic operations?
+2. **Constrained Efficiency:** Can either strategy achieve significant activity reduction while remaining within a predefined accuracy budget (e.g., $\le 1.0$ percentage point drop relative to the unconstrained baseline)?
+3. **Simulation Temporal Horizon:** How do short simulation windows ($T \in \{8, 16, 32\}$ timesteps) modulate these trade-offs and interact with equivalent Artificial Neural Network (ANN) reference baselines?
 
-For every layer and timestep:
+> **Scope Note:** This study quantifies algorithmic workload and activity proxies (synaptic operations, spike counts, occupancy) in simulated neural models. It does not measure physical neuromorphic chip power dissipation (joules), event-camera asynchronous latency, or biological plasticity mechanisms.
 
-```text
-v[t] = beta * u[t-1] + W * s_previous_layer[t] + b
-s[t] = 1 if v[t] > theta, else 0
-u[t] = v[t] - theta * stop_gradient(s[t])
-```
+---
 
-The forward reset immediately subtracts one threshold, emitting at most one spike per step even for large overshoots. Equality with threshold does not fire. The derivative of the spike operation uses `snntorch.surrogate.atan(alpha=2)`. The reset term is detached during backward propagation. Leak and threshold are fixed buffers, not learned parameters.
+## 2. Model Architecture and Dynamics
 
-Implementation clarification relative to the saved planning response: the explicit LIF cell supplies this exact state update; snnTorch supplies the surrogate derivative. The code does not rely on implicit state or reset defaults from `snn.Leaky`. Sequential layers use spikes from the same simulation step; no additional axonal delay is modeled.
+### 2.1 Spiking Neural Network (SNN)
 
-Logits are `10 * output_spikes.mean(time)`. Prediction uses `argmax`, which chooses the first class index on ties. Ties and all-zero outputs are included in accuracy and reported separately.
+The primary network is a fully connected 784–128–64–10 Leaky Integrate-and-Fire (LIF) architecture with learnable biases.
 
-The loss is `cross_entropy(logits, labels) + lambda * (hidden1.mean() + hidden2.mean()) / 2`. Each hidden mean averages batch, time, and neurons. This equally weights the two layer occupancies, not individual neurons or fanout costs. Output firing is not penalized. A different regularizer would be a different experiment.
+For each layer $l$ and discrete timestep $t \in \{1, \dots, T\}$:
 
-## Input encoding and random streams
+$$\mathbf{v}_l[t] = \beta \cdot \mathbf{u}_l[t-1] + \mathbf{W}_l \mathbf{s}_{l-1}[t] + \mathbf{b}_l$$
 
-Pixels are flattened and divided by 255 without centering or augmentation. For normalized pixel x, each input event is Bernoulli(x). CPU-generated random numbers are arranged example-major with the maximum declared T, then prefixes are used for shorter windows. At evaluation, order, images, maximum T, and encoding seeds are shared across methods. This also makes encoding independent of evaluation batch partitioning.
+$$\mathbf{s}_l[t] = \Theta(\mathbf{v}_l[t] - \theta_l) = \begin{cases} 1 & \text{if } \mathbf{v}_l[t] > \theta_l \\ 0 & \text{if } \mathbf{v}_l[t] \le \theta_l \end{cases}$$
 
-Initialization uses the training seed. Data ordering uses seed + 20000 and training encoding uses seed + 10000. Separate validation and test encoding banks are declared in the config. The main study has five independent training seeds and three encoding realizations per trained SNN. ANN evaluation has no redundant encoding repeats.
+$$\mathbf{u}_l[t] = \mathbf{v}_l[t] - \theta_l \cdot \text{sg}(\mathbf{s}_l[t])$$
 
-The synthetic dataset is ten generated spatial patterns for software testing only. It never stands in for MNIST or Fashion-MNIST research evidence.
+Where:
+- $\beta = 0.9$ is the membrane potential decay factor (fixed buffer).
+- $\theta_l = 1.0$ is the base firing threshold (fixed buffer).
+- $\mathbf{u}_l[t]$ is the post-reset membrane potential, implementing an **immediate subtractive reset**.
+- $\text{sg}(\cdot)$ is the `stop_gradient` operator, ensuring reset dynamics do not propagate gradient artifacts.
+- Surrogate derivative during backpropagation uses the arctangent formulation:
+  $$\frac{\partial \mathbf{s}}{\partial \mathbf{v}} = \frac{1}{\pi (1 + (\alpha (\mathbf{v} - \theta))^2)}, \quad \alpha = 2.0$$
+- State is strictly local to each forward call and initialized to zero ($\mathbf{u}[0] = \mathbf{0}$).
 
-## Main grid and controls
+### 2.2 Output Decoding and Loss Function
 
-T = 8, 16, 32; lambda = 0, 0.1, 1; training seeds = 11, 22, 33, 44, 55. Train each T separately. Use Adam, initial learning rate 0.001, batch 128, and initially 15 epochs. Pilot convergence checks must determine whether these defaults are suitable.
+Class predictions are derived from the mean firing rate of the 10 output neurons across the simulation window, scaled by a logit factor $\gamma = 10.0$:
 
-The baseline checkpoint at each T/seed is evaluated with hidden-threshold multipliers 1, 1.25, 1.5. The output threshold stays 1 and weights are frozen. Regularized models are evaluated at multiplier 1 only. The ANN has the same number of trainable weights and biases, with its own checkpoint chosen by validation.
+$$\mathbf{z} = \gamma \cdot \frac{1}{T} \sum_{t=1}^T \mathbf{s}_{\text{out}}[t]$$
 
-This is a controlled small-model comparison, not a claim that the ANN or SNN is state of the art. Equal epochs mean equal numbers of data passes, not equal training computation across T. The provided ANN training defaults require the same development-stage convergence assessment as the SNN.
+$$\hat{y} = \arg\max_c (\mathbf{z}_c)$$
 
-## Measurement definitions
+The training loss combines standard cross-entropy with an equally weighted hidden-layer spike occupancy penalty:
 
-- `spikes_layer0`: encoded input spikes per image over the full window.
-- `spikes_layer1/2/3`: emitted events in hidden 1, hidden 2, and output.
-- `occupancy_layerK`: layer spike count divided by T times its neuron count.
-- `synops_layer1/2/3`: input-to-hidden1, hidden1-to-hidden2, and hidden2-to-output effective accumulations.
-- `synops_total`: sum of those three operation counts.
-- `synops_hidden_outputs`: sum of layers 2 and 3, which can be affected directly by hidden firing reductions.
-- `inactive_layerK_fraction`: fraction of neurons that never fire across that evaluation partition and encoding realization; repeat values are averaged within a training seed.
-- `neuron_updates`: T times the 202 modeled hidden/output neurons for the default SNN.
-- `dense_simulator_macs`: T times the number of weight connections; records the dense linear workload used by this implementation.
-- ANN `effective_macs`: nonzero source activations times nonzero outgoing weights, measured per image.
-- ANN `dense_macs`: number of weight connections per forward pass.
-- `software_forward_ms_per_image`: time around the instrumented forward call, including synchronization on CUDA; excludes encoding, loading, metric computation, and file output. No warmup benchmark suite is implemented, so this is descriptive runtime, not a rigorous cross-device latency claim.
+$$\mathcal{L} = \mathcal{L}_{\text{CE}}(\mathbf{z}, y) + \lambda \cdot \frac{1}{2} \left( \bar{s}_{\text{hidden1}} + \bar{s}_{\text{hidden2}} \right)$$
 
-Each active source event contributes its nonzero-weight fanout. For dense default weights, SynOps = `128*S0 + 64*S1 + 10*S2`. Zero-weight connections are excluded if they occur. Negative weights still count. Bias additions, leakage multiplications, comparisons, resets, encoder work, memory accesses, routing, and output decoding are excluded from SynOps; neuron updates and software workload are reported separately, without converting them to joules.
+where $\bar{s}_l = \frac{1}{B \cdot T \cdot N_l} \sum_{b=1}^B \sum_{t=1}^T \sum_{i=1}^{N_l} s_{l, i}[t, b]$ is the mean spike occupancy for layer $l$. Output layer spikes are unpenalized.
 
-Footprint includes trainable parameter bytes, registered fixed-buffer bytes, and an analytic float32 membrane-state size per image. It is not peak process memory, training memory, checkpoint file size, or full device memory usage.
+### 2.3 Artificial Neural Network (ANN) Reference
 
-## Selection and analysis
+The reference ANN shares the identical topology (784–128–64–10) and parameter count, utilizing standard ReLU activations in hidden layers:
 
-Checkpoint selection maximizes mean validation accuracy across its encoding bank, with earliest-epoch tie breaking. Candidate selection minimizes mean validation total SynOps within one percentage point of the same-T lambda=0, multiplier=1 baseline. Candidates are averaged across training seeds; a common setting is selected for all seeds at each T.
+$$\mathbf{h}_1 = \text{ReLU}(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1), \quad \mathbf{h}_2 = \text{ReLU}(\mathbf{W}_2 \mathbf{h}_1 + \mathbf{b}_2), \quad \mathbf{z}_{\text{ANN}} = \mathbf{W}_3 \mathbf{h}_2 + \mathbf{b}_3$$
 
-Primary comparison: T=16, lambda=0.1, multiplier=1 versus T=16, lambda=0, multiplier=1. The main grid is evaluated and reported in full; other comparisons are descriptive/secondary. If a development pilot changes the primary penalty, amend the config before freezing and use a fresh results folder.
+---
 
-For analysis, average encoding realizations inside each trained model first. Use paired differences across the same training-seed IDs:
+## 3. Input Encoding and Randomness Controls
 
-```text
-accuracy_difference_pp = 100 * (accuracy_A - accuracy_B)
-activity_reduction_percent = 100 * (1 - operations_A / operations_B)
-```
+- **Bernoulli Rate Encoding:** Normalized grayscale inputs $x \in [0, 1]^{784}$ generate independent Poisson/Bernoulli spike trains where $P(s_{\text{in}}[t] = 1) = x$.
+- **Shared Prefixes:** Random numbers are generated in example-major order across the maximum temporal window ($T_{\text{max}} = 32$), ensuring identical spike realization prefixes for shorter sub-windows ($T=8, 16$).
+- **Seed Hierarchy:**
+  - Training seeds: $S \in \{11, 22, 33, 44, 55\}$ (5 independent runs per condition).
+  - Data shuffle seed: $\text{seed} + 20000$.
+  - Training encoding generator: $\text{seed} + 10000$.
+  - Evaluation encoding banks: 3 distinct validation seeds $\{101, 102, 103\}$ and 3 distinct test seeds $\{201, 202, 203\}$.
 
-The summary is the mean of per-seed effects, not a ratio of pooled totals. A zero baseline operation count makes the relative reduction undefined; the output stays missing rather than inventing a percentage.
+---
 
-Two-sided 95% Student t intervals use training seeds as the independent unit. A single seed receives no SD/CI. The accuracy-tolerance interpretation requires the lower interval bound to exceed minus the declared tolerance, and should be interpreted with the interval assumptions. There is no automatic significance search across the grid or claim of universal noninferiority. Selected-strategy intervals are conditional on validation selection and are secondary.
+## 4. Experimental Grid
 
-## Reproducibility and integrity
+The primary benchmark dataset is **Fashion-MNIST** (54,000 train / 6,000 validation / 10,000 test).
 
-Study, protocol, and selection files record resolved config, code/data/split hashes, and dates. Training records the environment and checkpoint hash. Final testing checks those records and requires complete validation evidence. Failed or incomplete training runs are preserved; incomplete grids cannot silently enter analysis.
+| Parameter | Values |
+|---|---|
+| Timesteps ($T$) | $8, 16, 32$ |
+| Regularization Penalty ($\lambda$) | $0.0, 0.1, 1.0$ |
+| Threshold Multipliers ($\alpha$) | $1.0, 1.25, 1.5$ (evaluated on $\lambda=0.0$ baselines) |
+| Optimizer | Adam ($\text{lr} = 10^{-3}$, batch size $= 128$, epochs $= 15$) |
+| Replications | 5 independent seeds per configuration (45 SNN + 5 ANN runs = 50 training runs) |
 
-These checks help prevent accidental leakage and mixed experiments. They do not constitute external preregistration or make it impossible to inspect test data manually. For a public preregistration, deposit the plan yourself before the study if desired.
+### Interventions Under Comparison:
+1. **Training-time Regularization:** Train SNN with $\lambda \in \{0.1, 1.0\}$, keep threshold multiplier $\alpha = 1.0$.
+2. **Post-training Threshold Scaling:** Train unregularized baseline ($\lambda = 0.0$), evaluate at test time with modified hidden thresholds $\theta_1, \theta_2 \leftarrow \theta \cdot \alpha$ for $\alpha \in \{1.25, 1.5\}$, while keeping weights and output threshold $\theta_3 = 1.0$ fixed.
 
-## Relevant sources
+---
 
-- [Eshraghian et al. (2023), Training Spiking Neural Networks Using Lessons From Deep Learning](https://arxiv.org/abs/2109.12894)
-- [Yan et al. (2022), Backpropagation With Sparsity Regularization for Spiking Neural Network Learning](https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2022.760298/full)
-- [Yik et al. (2025), NeuroBench](https://www.nature.com/articles/s41467-025-56739-4)
-- [Yan et al., analytical energy perspectives, version 6 (2026)](https://arxiv.org/abs/2409.08290v6)
-- [snnTorch Leaky source documentation](https://snntorch.readthedocs.io/en/stable/_modules/snntorch/_neurons/leaky.html)
-- [SURJ author guidelines](https://ojs.stanford.edu/ojs/index.php/surj/author-guidelines)
+## 5. Quantitative Metrics and Activity Accounting
 
-The complete literature-informed topic comparison and journal assessment are preserved in `research_response.md`.
+- **Layer Spikes ($S_l$):** Average total spikes emitted per image across the $T$-step window in layer $l$.
+- **Layer Occupancy ($O_l$):** $\frac{S_l}{T \cdot N_l} \in [0, 1]$.
+- **Effective Synaptic Operations ($\text{SynOps}$):** Event-driven accumulation count. An active spike in layer $l-1$ triggers additions across all non-zero outgoing synaptic connections to layer $l$:
+  $$\text{SynOps}_{\text{total}} = \sum_{l=1}^3 \sum_{i \in \text{active}_{l-1}} \|\mathbf{w}_{l, :, i}\|_0$$
+  For dense weights: $\text{SynOps}_{\text{total}} = 128 \cdot S_0 + 64 \cdot S_1 + 10 \cdot S_2$.
+- **Hidden SynOps:** $\text{SynOps}_{\text{hidden}} = 64 \cdot S_1 + 10 \cdot S_2$ (activity directly manipulable by hidden-layer intervention).
+- **ANN Effective MACs:** Multiply-accumulate operations accounted as non-zero input activations multiplied by non-zero outgoing weights per layer.
+- **Model Footprint:** Analytic tracking of parameter storage bytes and per-image membrane state requirements.
+
+---
+
+## 6. Selection and Statistical Analysis
+
+### 6.1 Validation-Gated Strategy Selection
+Candidate strategies are selected purely on the validation partition:
+- Define accuracy tolerance margin: $\delta = 1.0$ percentage point.
+- For each $T$, identify candidates satisfying:
+  $$\overline{\text{Acc}}_{\text{val}}(\text{candidate}) \ge \overline{\text{Acc}}_{\text{val}}(\text{baseline}_{T}) - \delta$$
+- Among eligible candidates, select the one that minimizes mean validation $\text{SynOps}_{\text{total}}$.
+
+### 6.2 Statistical Estimation
+- Repeat measurements over encoding realizations are averaged within each seed before calculating across-seed statistics.
+- Pairwise comparisons (e.g., Regularized vs. Baseline) compute per-seed paired differences:
+  $$\Delta \text{Acc} = \text{Acc}_A - \text{Acc}_B$$
+  $$\% \Delta \text{Activity} = 100 \times \left(1 - \frac{\text{SynOps}_A}{\text{SynOps}_B}\right)$$
+- Report two-sided 95% Student's $t$ confidence intervals across the $N=5$ training seeds.
+
+---
+
+## 7. References
+
+1. Eshraghian, J. K., et al. (2023). "Training Spiking Neural Networks Using Lessons From Deep Learning." *Proceedings of the IEEE*, 111(9), 1016–1054.
+2. Yan, Z., et al. (2022). "Backpropagation With Sparsity Regularization for Spiking Neural Network Learning." *Frontiers in Neuroscience*, 16, 760298.
+3. Yik, J., et al. (2025). "NeuroBench: Advancing Neuromorphic Computing through Collaborative, Fair and Representative Benchmarking." *Nature Communications*, 16, 56739.
