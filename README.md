@@ -11,8 +11,9 @@ A beginner-friendly, software-only research repository for a possible SURJ paper
 - [Experimental protocol](docs/EXPERIMENT_PROTOCOL.md): exact implemented equations, controls, analysis, and limitations.
 - [Original research prompt](docs/original_research_prompt.md): your initial objectives.
 - [Validation record](docs/VALIDATION.md): checks actually performed during repository creation.
+- [Project handoff](docs/HANDOFF.md): status summary at delivery time.
 
-No author identity, research outcomes, publication claim, or remote Git host is assumed. The local repository is ready for your own experiments and writing.
+No research outcomes or publication claims are made. This is a work-in-progress research codebase; the full Fashion-MNIST experiment has not been run yet.
 
 ## Quick start on this Windows workspace
 
@@ -24,7 +25,7 @@ Open PowerShell in this directory:
 .\run.ps1 -Action pilot
 ```
 
-The launcher first uses a local `.venv`. In this delivered workspace it can also use the isolated validation environment at `../../work/snn-venv`. That fallback is a local convenience; it is not included when transferring the source repository.
+The launcher uses a local `.venv`. (It may also fall back to a author-local validation environment, which does not exist on a fresh clone.)
 
 With the workspace fallback, `check` uses the external temporary-folder compatibility runner when available. On a normal local environment, it runs pytest directly. The launcher keeps Matplotlib's cache under `runs/` unless you set `MPLCONFIGDIR` yourself.
 
