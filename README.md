@@ -49,7 +49,7 @@ This project compares **training-time spike regularization** against **post-trai
 - **SNN Dynamics:** 784–128–64–10 Leaky Integrate-and-Fire (LIF) network ($\beta = 0.9, \theta = 1.0$) with immediate subtractive reset ($\mathbf{u}[t] = \mathbf{v}[t] - \theta \cdot \mathbf{s}[t]$), detached reset gradient, and arctangent surrogate gradient ($\alpha = 2.0$).
 - **ANN Reference:** Identical 784–128–64–10 topology and parameter count (109,386 parameters) with standard ReLU activations.
 - **Activity Accounting:**
-  - **SynOps (SNN):** Event-driven accumulation count ($\text{SynOps} = \sum_{l} \sum_{i \in \text{active}_{l-1}} \|\mathbf{w}_{l, :, i}\|_0$).
+  - **SynOps (SNN):** Event-driven synaptic accumulation count; for dense layers, $\text{SynOps} = 128 \cdot S_0 + 64 \cdot S_1 + 10 \cdot S_2$, where each active source spike triggers additions across its non-zero outgoing fan-out weights ($\text{SynOps} = \sum_{l} \sum_{i \in \text{active}} \|\mathbf{W}_{l}[:, i]\|_0$).
   - **Effective MACs (ANN):** Non-zero activation multiply-accumulate operations.
   - **Occupancy & Inactive Neurons:** Layer-wise spike rates and silent neuron proportions.
 - **Randomness Controls:**
