@@ -1,6 +1,6 @@
 # Accuracy–Activity Trade-offs in Spiking Neural Networks: Regularization vs. Threshold Adaptation
 
-[![Tests](https://github.com/soulsaku19/neuromorphic-snn-tradeoffs/actions/workflows/ci.yml/badge.svg)](https://github.com/soulsaku19/neuromorphic-snn-tradeoffs/actions/workflows/ci.yml)
+[![Tests](https://github.com/SakshamDev/snn-study/actions/workflows/ci.yml/badge.svg)](https://github.com/SakshamDev/snn-study/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -105,8 +105,8 @@ This project compares **training-time spike regularization** against **post-trai
 
 ```bash
 # Clone the repository
-git clone https://github.com/soulsaku19/neuromorphic-snn-tradeoffs.git
-cd neuromorphic-snn-tradeoffs
+git clone https://github.com/SakshamDev/snn-study.git
+cd snn-study
 
 # Create and activate virtual environment
 python -m venv .venv

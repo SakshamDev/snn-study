@@ -34,8 +34,8 @@ guard refuses to resume across code revisions anyway.
 2. Cells:
 
 ```python
-!git clone https://github.com/<you>/<repo>.git
-%cd <repo>
+!git clone https://github.com/SakshamDev/snn-study.git
+%cd snn-study
 !pip install -q snntorch
 ```
 
