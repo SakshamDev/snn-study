@@ -19,6 +19,7 @@ def main(command):
         parser.add_argument("--threshold-multiplier", type=float, default=1)
     if command == "run_grid":
         parser.add_argument("--stage", choices=["train", "validate", "test"], required=True)
+        parser.add_argument("--shard", default=None, help="Run only part of the grid, as 'index/count' (e.g. 0/3)")
     args = parser.parse_args()
     cfg = load_config(args.config)
     from . import experiment
@@ -34,7 +35,7 @@ def main(command):
         steps, penalty = (1, 0.0) if args.model == "ann" else (args.steps, args.penalty)
         print(experiment.evaluate_condition(cfg, args.model, steps, penalty, args.seed, args.split, args.threshold_multiplier))
     elif command == "run_grid":
-        experiment.run_grid(cfg, args.stage)
+        experiment.run_grid(cfg, args.stage, args.shard)
     elif command in {"analyze", "select"}:
         from .analysis import analyze, select_validation
         print(analyze(cfg, args.split) if command == "analyze" else select_validation(cfg))

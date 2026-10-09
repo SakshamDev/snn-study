@@ -56,3 +56,11 @@ MNIST's official test partition was downloaded and hashed for provenance but was
 The 50-run Fashion-MNIST study has not been started. CUDA, other operating systems, larger architectures, corruption tests, other neuron models, hardware energy, and paper submission have not been tested or performed. Main-study convergence and ANN tuning remain explicit development milestones in the implementation plan.
 
 The research source hash used in the completed smoke and pilot runs is `679c0eb7fd8f551a60b208496be64f84743200c90f0925d9e52d11fb269a5a84`. Runs preceded the initial Git commit, so their `git_commit` values are null; the source hash supplies their implementation provenance. Source, configs, plans, and this report are committed; generated datasets and run artifacts remain local and Git-ignored.
+
+## GPU-oriented optimisation pass (October 9, 2026)
+
+- Added a layer-major SNN forward, device-resident loss accumulation, index-based batching with a DataLoader-identical shuffle, a bit-identical threaded spike encoder, and grid sharding. See docs/KAGGLE.md.
+- 28 tests pass (9 new in tests/test_fast_path.py: shuffle/batch equivalence with DataLoader, encoder stream identity, forward and gradient equivalence with the original time-major loop, prefetch behaviour, sharding).
+- Synthetic end-to-end workflow and a 2-worker sharded train stage completed on CPU. A 3-epoch MNIST run tracked the previous implementation closely (epoch-1 loss 1.4611 vs 1.4604) but is not bit-identical.
+- CUDA execution, deterministic-mode behaviour on a T4, and GPU speedups have NOT been tested; run the preflight in docs/KAGGLE.md first. Runs under runs/pilot and runs/smoke predate this change and will be refused by the code-revision guard.
+

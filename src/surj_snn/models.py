@@ -38,15 +38,20 @@ class SNN(nn.Module):
             cell.threshold.fill_(self.base_threshold * (multiplier if index < 2 else 1.0))
 
     def forward(self, spikes):
+        # Layers are strictly feed-forward, so layer k at time t depends only on layer k-1
+        # at time t and its own membrane. Evaluating layer-major is therefore equivalent to
+        # the time-major loop, but the synaptic matmul runs once over all timesteps.
         steps, batch, _ = spikes.shape
-        membranes = [spikes.new_zeros((batch, width)) for width in self.widths[1:]]
-        records = [[] for _ in self.layers]
-        for time in range(steps):
-            activation = spikes[time]
-            for index, (layer, cell) in enumerate(zip(self.layers, self.cells)):
-                activation, membranes[index] = cell(layer(activation), membranes[index])
-                records[index].append(activation)
-        outputs = [torch.stack(record) for record in records]
+        outputs, activation = [], spikes
+        for layer, cell, width in zip(self.layers, self.cells, self.widths[1:]):
+            currents = layer(activation)
+            membrane = spikes.new_zeros((batch, width))
+            record = []
+            for time in range(steps):
+                spike, membrane = cell(currents[time], membrane)
+                record.append(spike)
+            activation = torch.stack(record)
+            outputs.append(activation)
         logits = self.logit_scale * outputs[-1].mean(dim=0)
         penalty = (outputs[0].mean() + outputs[1].mean()) / 2
         return logits, penalty, [spikes, *outputs]

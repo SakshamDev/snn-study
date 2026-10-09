@@ -1,0 +1,22 @@
+{
+  "name": "synthetic-software-check-cuda",
+  "dataset": "synthetic",
+  "results_dir": "runs/smoke_cuda",
+  "train_size": 200,
+  "val_size": 50,
+  "hidden_sizes": [16, 12],
+  "timesteps": [4],
+  "penalties": [0.0, 1.0],
+  "threshold_multipliers": [1.0, 1.25, 1.5],
+  "seeds": [0],
+  "validation_encoding_seeds": [101, 102],
+  "test_encoding_seeds": [201, 202],
+  "batch_size": 50,
+  "eval_batch_size": 50,
+  "epochs": 2,
+  "primary_timestep": 4,
+  "primary_penalty": 1.0,
+  "device": "cuda",
+  "threads": 1,
+  "include_ann": true
+}

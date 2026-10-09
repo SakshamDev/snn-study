@@ -12,6 +12,7 @@ A beginner-friendly, software-only research repository for a possible SURJ paper
 - [Original research prompt](docs/original_research_prompt.md): your initial objectives.
 - [Validation record](docs/VALIDATION.md): checks actually performed during repository creation.
 - [Project handoff](docs/HANDOFF.md): status summary at delivery time.
+- [Kaggle GPU guide](docs/KAGGLE.md): running the main study on a T4 with the CUDA configs and parallel workers.
 
 No research outcomes or publication claims are made. This is a work-in-progress research codebase; the full Fashion-MNIST experiment has not been run yet.
 

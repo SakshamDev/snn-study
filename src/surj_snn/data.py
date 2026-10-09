@@ -1,5 +1,7 @@
 import hashlib
 import json
+import queue
+import threading
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -9,6 +11,7 @@ class Images(Dataset):
     def __init__(self, images, labels, indices):
         self.images, self.labels = images, labels
         self.indices = np.asarray(indices, dtype=np.int64)
+        self._gathered = None
 
     def __len__(self):
         return len(self.indices)
@@ -17,6 +20,23 @@ class Images(Dataset):
         original = int(self.indices[index])
         x = self.images[original].reshape(-1).to(torch.float32) / 255.0
         return x, int(self.labels[original]), original
+
+    def _arrays(self):
+        """Subset gathered once as flat uint8 pixels, int64 labels and original ids."""
+        if self._gathered is None:
+            index = torch.from_numpy(self.indices)
+            self._gathered = (self.images[index].reshape(len(self), -1).contiguous(),
+                              self.labels[index].to(torch.int64),
+                              index.clone())
+        return self._gathered
+
+    def batches(self, batch_size, order=None):
+        """Yield (float32 pixels / 255, labels, ids) exactly as a DataLoader would collate them."""
+        pixels, labels, ids = self._arrays()
+        order = torch.arange(len(self)) if order is None else order
+        for start in range(0, len(order), batch_size):
+            index = order[start:start + batch_size]
+            yield pixels[index].to(torch.float32) / 255.0, labels[index], ids[index]
 
 def stratified_indices(labels, train_size, val_size, seed):
     labels = np.asarray(labels)
@@ -88,10 +108,75 @@ def loader(dataset, batch_size, shuffle=False, seed=0):
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0,
                       generator=torch.Generator().manual_seed(seed), drop_last=False)
 
-def encode(x, steps, max_steps, generator):
-    """CPU Bernoulli draws in example-major order; common prefixes across T/batch size."""
+def shuffled_order(size, generator):
+    """One epoch of the order DataLoader(shuffle=True, generator=generator) would visit.
+
+    Per epoch, DataLoader draws one base seed, RandomSampler draws the permutation, and then
+    RandomSampler draws a second, discarded zero-length remainder permutation. Mirroring all
+    three draws keeps the shuffle stream identical across epochs.
+    """
+    torch.empty((), dtype=torch.int64).random_(generator=generator)
+    order = torch.randperm(size, generator=generator)
+    torch.randperm(size, generator=generator)
+    return order
+
+def encode_bool(x, steps, max_steps, generator):
+    """CPU Bernoulli draws in example-major order; common prefixes across T/batch size.
+
+    Returns a boolean (steps, batch, features) tensor (4x cheaper to transfer than float).
+    """
     if x.device.type != "cpu" or not 0 < steps <= max_steps:
         raise ValueError("Encoding expects CPU images and 0 < steps <= max_steps")
     uniform = torch.rand((x.shape[0], max_steps, x.shape[1]), generator=generator)
-    return (uniform[:, :steps] < x[:, None]).to(x.dtype).permute(1, 0, 2).contiguous()
+    return (uniform[:, :steps] < x[:, None]).permute(1, 0, 2).contiguous()
+
+def encode(x, steps, max_steps, generator):
+    """CPU Bernoulli draws in example-major order; common prefixes across T/batch size."""
+    return encode_bool(x, steps, max_steps, generator).to(x.dtype)
+
+def prepared_batches(dataset, batch_size, order, spiking, steps, max_steps, generator, pin=False):
+    """Batches with CPU-side preparation (spike encoding for SNNs), in deterministic order."""
+    for x, y, ids in dataset.batches(batch_size, order):
+        payload = encode_bool(x, steps, max_steps, generator) if spiking else x
+        yield (payload.pin_memory() if pin else payload), y, ids
+
+def prefetch(iterable, depth=3):
+    """Produce items on one background thread so CPU encoding overlaps with device compute.
+
+    A single producer thread consumes the iterable strictly in order, so every random
+    stream is advanced exactly as in a serial loop. Producer errors are re-raised.
+    """
+    buffer, stop, finished = queue.Queue(maxsize=depth), threading.Event(), object()
+
+    def put(item):
+        while not stop.is_set():
+            try:
+                buffer.put(item, timeout=0.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def produce():
+        try:
+            for item in iterable:
+                if not put((None, item)):
+                    return
+            put((None, finished))
+        except BaseException as error:
+            put((error, None))
+
+    worker = threading.Thread(target=produce, daemon=True)
+    worker.start()
+    try:
+        while True:
+            error, item = buffer.get()
+            if error is not None:
+                raise error
+            if item is finished:
+                return
+            yield item
+    finally:
+        stop.set()
+        worker.join()
 

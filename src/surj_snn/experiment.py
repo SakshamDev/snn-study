@@ -6,7 +6,7 @@ import torch
 from torch.nn import functional as F
 
 from .config import conditions, run_name, token
-from .data import encode, load_data, loader
+from .data import load_data, prefetch, prepared_batches, shuffled_order
 from .metrics import classification_metrics, effective_operations, footprint
 from .models import make_model
 from .utils import (code_digest, configure_runtime, environment, now, read_json,
@@ -59,6 +59,10 @@ def assert_condition(cfg, kind, steps, penalty, seed):
     if (kind, steps, penalty, seed) not in list(conditions(cfg)):
         raise ValueError("Condition is outside the declared configuration grid")
 
+def to_model_input(payload, device):
+    """Move a prepared batch to the device; boolean spikes become exact 0./1. float32."""
+    return payload.to(device, non_blocking=True).to(torch.float32)
+
 def quick_accuracy(model, kind, dataset, cfg, steps, device):
     model.eval()
     accuracies = []
@@ -66,16 +70,16 @@ def quick_accuracy(model, kind, dataset, cfg, steps, device):
     with torch.inference_mode():
         for encoding_seed in seeds:
             generator = torch.Generator().manual_seed(encoding_seed)
-            correct, count = 0, 0
-            for x, y, _ in loader(dataset, cfg.eval_batch_size):
-                if kind == "snn":
-                    input_spikes = encode(x, steps, max(cfg.timesteps), generator).to(device)
-                    logits, _, _ = model(input_spikes)
-                else:
-                    logits, _ = model(x.to(device))
-                correct += int((logits.argmax(1).cpu() == y).sum())
+            correct = torch.zeros((), dtype=torch.int64, device=device)
+            count = 0
+            batches = prefetch(prepared_batches(dataset, cfg.eval_batch_size, None, kind == "snn", steps,
+                                                max(cfg.timesteps), generator, device.type == "cuda"))
+            for payload, y, _ in batches:
+                inputs = to_model_input(payload, device)
+                logits = model(inputs)[0]
+                correct += (logits.argmax(1) == y.to(device)).sum()
                 count += len(y)
-            accuracies.append(correct / count)
+            accuracies.append(int(correct) / count)
     return float(np.mean(accuracies))
 
 def train_condition(cfg, kind, steps, penalty, seed, data_bundle=None):
@@ -105,37 +109,47 @@ def train_condition(cfg, kind, steps, penalty, seed, data_bundle=None):
     try:
         model = make_model(cfg, kind).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-        training_loader = loader(datasets["train"], cfg.batch_size, shuffle=True, seed=seed + 20000)
+        # Same shuffle stream as DataLoader(shuffle=True, generator=seed + 20000).
+        shuffle_generator = torch.Generator().manual_seed(seed + 20000)
         generator = torch.Generator().manual_seed(seed + 10000)
+        pin = device.type == "cuda"
         best_accuracy = -1.0
         history = []
         total_start = time.perf_counter()
         for epoch in range(1, cfg.epochs + 1):
             epoch_start = time.perf_counter()
             model.train()
-            sums = {"loss": 0.0, "cross_entropy": 0.0, "hidden_occupancy": 0.0}
-            count, correct = 0, 0
-            for x, y, _ in training_loader:
+            # Running totals stay on the device so no host synchronization happens per step:
+            # loss, cross-entropy, hidden occupancy (each weighted by batch size), correct count.
+            totals = torch.zeros(4, dtype=torch.float64, device=device)
+            count = 0
+            order = shuffled_order(len(datasets["train"]), shuffle_generator)
+            batches = prefetch(prepared_batches(datasets["train"], cfg.batch_size, order, kind == "snn",
+                                                steps, max(cfg.timesteps), generator, pin))
+            for step, (payload, y, _) in enumerate(batches, start=1):
                 optimizer.zero_grad(set_to_none=True)
-                y_device = y.to(device)
+                y_device = y.to(device, non_blocking=True)
+                inputs = to_model_input(payload, device)
                 if kind == "snn":
-                    input_spikes = encode(x, steps, max(cfg.timesteps), generator).to(device)
-                    logits, regularizer, _ = model(input_spikes)
+                    logits, regularizer, _ = model(inputs)
                 else:
-                    logits, _ = model(x.to(device))
+                    logits, _ = model(inputs)
                     regularizer = logits.new_zeros(())
                 cross_entropy = F.cross_entropy(logits, y_device)
                 loss = cross_entropy + penalty * regularizer
-                if not torch.isfinite(loss):
-                    raise FloatingPointError("Nonfinite loss; failed condition retained")
                 loss.backward()
                 optimizer.step()
                 size = len(y)
                 count += size
-                correct += int((logits.detach().argmax(1).cpu() == y).sum())
-                sums["loss"] += float(loss.detach()) * size
-                sums["cross_entropy"] += float(cross_entropy.detach()) * size
-                sums["hidden_occupancy"] += float(regularizer.detach()) * size
+                totals += torch.stack([loss.detach().double() * size, cross_entropy.detach().double() * size,
+                                       regularizer.detach().double() * size,
+                                       (logits.detach().argmax(1) == y_device).sum().double()])
+                if step % 50 == 0 and not torch.isfinite(totals).all():
+                    raise FloatingPointError("Nonfinite loss; failed condition retained")
+            loss_sum, cross_entropy_sum, occupancy_sum, correct = totals.tolist()
+            if not all(np.isfinite([loss_sum, cross_entropy_sum, occupancy_sum])):
+                raise FloatingPointError("Nonfinite loss; failed condition retained")
+            sums = {"loss": loss_sum, "cross_entropy": cross_entropy_sum, "hidden_occupancy": occupancy_sum}
             validation_accuracy = quick_accuracy(model, kind, datasets["validation"], cfg, steps, device)
             row = {"epoch": epoch, **{key: value / count for key, value in sums.items()},
                    "train_accuracy": correct / count, "validation_accuracy": validation_accuracy,
@@ -233,8 +247,10 @@ def evaluate_condition(cfg, kind, steps, penalty, seed, split="validation", mult
         active_neurons = [torch.zeros(width, dtype=torch.bool) for width in model.widths[1:]]
         forward_seconds = 0.0
         with torch.inference_mode():
-            for x, y, ids in loader(datasets[split], cfg.eval_batch_size):
-                inputs = encode(x, steps, max(cfg.timesteps), generator).to(device) if kind == "snn" else x.to(device)
+            batches = prefetch(prepared_batches(datasets[split], cfg.eval_batch_size, None, kind == "snn", steps,
+                                                max(cfg.timesteps), generator, device.type == "cuda"))
+            for payload, y, ids in batches:
+                inputs = to_model_input(payload, device)
                 synchronize(device)
                 start = time.perf_counter()
                 output = model(inputs)
@@ -294,14 +310,30 @@ def evaluate_condition(cfg, kind, steps, penalty, seed, split="validation", mult
     print(f"EVALUATED {run_dir.name} {split} threshold={multiplier}: accuracy={np.mean([r['accuracy'] for r in rows]):.4f}", flush=True)
     return result_path
 
-def run_grid(cfg, stage):
+def parse_shard(text):
+    """Parse 'index/count' (for example '0/3'); None means the whole grid."""
+    if text is None:
+        return None
+    index, count = (int(part) for part in str(text).split("/"))
+    if count < 1 or not 0 <= index < count:
+        raise ValueError("Shard must be 'index/count' with 0 <= index < count")
+    return index, count
+
+def shard_items(items, shard):
+    """Round-robin subset of an ordered grid; shards are disjoint and jointly complete."""
+    items = list(items)
+    return items if shard is None else items[shard[0]::shard[1]]
+
+def run_grid(cfg, stage, shard=None):
+    """Run a stage of the grid. Freeze the protocol and prepare data before starting shards."""
+    shard = parse_shard(shard) if isinstance(shard, str) else shard
     bundle = load_data(cfg)
     if stage == "train":
-        for condition in conditions(cfg):
+        for condition in shard_items(conditions(cfg), shard):
             train_condition(cfg, *condition, data_bundle=bundle)
     elif stage in {"validate", "test"}:
         split = "validation" if stage == "validate" else "test"
-        for condition, _ in evaluation_paths(cfg, split):
+        for condition, _ in shard_items(evaluation_paths(cfg, split), shard):
             kind, steps, penalty, seed, multiplier = condition
             evaluate_condition(cfg, kind, steps, penalty, seed, split, multiplier, data_bundle=bundle)
     else:

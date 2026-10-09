@@ -67,6 +67,8 @@ def configure_runtime(cfg, seed):
     torch.use_deterministic_algorithms(cfg.deterministic)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = cfg.deterministic
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     device = "cuda" if cfg.device == "auto" and torch.cuda.is_available() else cfg.device
     if device == "auto":
         device = "cpu"
